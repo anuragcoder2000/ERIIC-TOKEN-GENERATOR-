@@ -1,232 +1,328 @@
 from flask import Flask, render_template, request, jsonify
-import undetected_chromedriver as uc
-from selenium.webdriver.common.by import By
-from selenium.webdriver.support.ui import WebDriverWait
-from selenium.webdriver.support import expected_conditions as EC
 import requests
-import time
 import uuid
-import threading
+import time
+import base64
+import io
+import struct
 import random
 import os
+from Crypto.Cipher import AES, PKCS1_v1_5
+from Crypto.PublicKey import RSA
+from Crypto.Random import get_random_bytes
 
 app = Flask(__name__)
 
+# --- CONFIGURATION ---
 FB_APP_ID = "350685531728"
 FB_APP_SECRET = "62f8ce9f74b12f84c123cc23437a4a32"
 LITE_APP_ID = "275254692598279"
+API_GRAPH = "https://b-graph.facebook.com"
+API_METHOD = "https://api.facebook.com/method"
+
+# Device Profiles for Rotation (To avoid bot detection patterns)
+DEVICE_PROFILES = [
+    {
+        "model": "Pixel 8 Pro", "brand": "google", "os": "14", "build": "AP1A.240405.002",
+        "width": 1344, "height": 2992, "density": 3.0, "fbav": "460.0.0.42.109", "fbbv": "585672584"
+    },
+    {
+        "model": "Pixel 7", "brand": "google", "os": "13", "build": "TQ2A.230605.010",
+        "width": 1080, "height": 2400, "density": 2.625, "fbav": "455.0.0.28.111", "fbbv": "581000000"
+    },
+    {
+        "model": "SM-S918B", "brand": "samsung", "os": "13", "build": "TP1A.220624.014",
+        "width": 1440, "height": 3088, "density": 3.0, "fbav": "458.0.0.30.105", "fbbv": "583000000"
+    }
+]
+
+class DeviceFingerprint:
+    def __init__(self):
+        profile = random.choice(DEVICE_PROFILES)
+        
+        # Unique IDs
+        self.device_id = str(uuid.uuid4())
+        self.family_device_id = str(uuid.uuid4())
+        self.adid = str(uuid.uuid4())
+        
+        # Specs
+        self.os_version = profile["os"]
+        self.device_model = profile["model"]
+        self.device_brand = profile["brand"]
+        self.device_build = profile["build"]
+        self.carrier = random.choice(["T-Mobile", "Verizon", "AT&T", "Jio"])
+        self.locale = "en_US"
+        self.fbav = profile["fbav"]
+        self.fbbv = profile["fbbv"]
+        self.arch = "arm64-v8a"
+        self.density = profile["density"]
+        self.width = profile["width"]
+        self.height = profile["height"]
+        
+        # User-Agent
+        self.user_agent = (
+            f"Dalvik/2.1.0 (Linux; U; Android {self.os_version}; {self.device_model} Build/{self.device_build}) "
+            f"[FBAN/FB4A;FBAV/{self.fbav};FBPN/com.facebook.katana;FBLC/{self.locale};FBBV/{self.fbbv};"
+            f"FBCR/{self.carrier};FBMF/{self.device_brand};FBBD/{self.device_brand};FBDV/{self.device_model};"
+            f"FBSV/{self.os_version};FBCA/{self.arch}:null;FBDM/density={self.density},width={self.width},height={self.height};"
+            f"FB_FW/1;FBRV/0;]"
+        )
+
+    def get_headers(self):
+        return {
+            "User-Agent": self.user_agent,
+            "X-FB-Connection-Quality": random.choice(["EXCELLENT", "GOOD"]),
+            "X-FB-Connection-Type": "WIFI",
+            "X-FB-Legacy-Httplib": "true",
+            "X-Asbd-Url": "1",
+            "Accept": "*/*",
+            "Content-Type": "application/x-www-form-urlencoded",
+            "X-FB-Friendly-Name": "com.facebook.katana",
+            "X-FB-LDM": "1"
+        }
+
+    def get_base_params(self):
+        return {
+            "device_id": self.device_id,
+            "family_device_id": self.family_device_id,
+            "adid": self.adid,
+            "format": "json",
+            "generate_analytics_claim": "1",
+            "cpl": "true",
+            "try_num": "1",
+            "credentials_type": "password",
+            "source": "login",
+            "error_detail_type": "button_with_disabled",
+            "enroll_misauth": "false",
+            "generate_session_cookies": "1",
+            "generate_machine_id": "1",
+            "currently_logged_in_userid": "0",
+            "fb_api_req_friendly_name": "authenticate"
+        }
+
+class FacebookPasswordEncryptor:
+    @staticmethod
+    def get_public_key():
+        try:
+            url = f'{API_GRAPH}/pwd_key_fetch'
+            params = {
+                'version': '2',
+                'flow': 'CONTROLLER_INITIALIZATION',
+                'method': 'GET',
+                'fb_api_req_friendly_name': 'pwdKeyFetch',
+                'fb_api_caller_class': 'com.facebook.auth.login.AuthOperations',
+                'access_token': f'{FB_APP_ID}|{FB_APP_SECRET}'
+            }
+            response = requests.post(url, params=params).json()
+            return response.get('public_key'), str(response.get('key_id', '25'))
+        except Exception as e:
+            print(f"Key Fetch Error: {e}")
+            return None, "25"
+
+    @staticmethod
+    def encrypt(password, public_key=None, key_id="25"):
+        if public_key is None:
+            public_key, key_id = FacebookPasswordEncryptor.get_public_key()
+            if public_key is None: 
+                return password
+            
+        try:
+            rand_key = get_random_bytes(32)
+            iv = get_random_bytes(12)
+            pubkey = RSA.import_key(public_key)
+            cipher_rsa = PKCS1_v1_5.new(pubkey)
+            encrypted_rand_key = cipher_rsa.encrypt(rand_key)
+            
+            cipher_aes = AES.new(rand_key, AES.MODE_GCM, nonce=iv)
+            current_time = int(time.time())
+            cipher_aes.update(str(current_time).encode("utf-8"))
+            encrypted_passwd, auth_tag = cipher_aes.encrypt_and_digest(password.encode("utf-8"))
+            
+            buf = io.BytesIO()
+            buf.write(bytes([1, int(key_id)]))
+            buf.write(iv)
+            buf.write(struct.pack("<h", len(encrypted_rand_key)))
+            buf.write(encrypted_rand_key)
+            buf.write(auth_tag)
+            buf.write(encrypted_passwd)
+            
+            encoded = base64.b64encode(buf.getvalue()).decode("utf-8")
+            return f"#PWD_FB4A:2:{current_time}:{encoded}"
+        except Exception as e:
+            print(f"Encryption Error: {e}")
+            return password
 
 sessions_data = {}
 
-def find_and_click(driver, xpaths, timeout=5):
-    for xp in xpaths:
-        try:
-            el = WebDriverWait(driver, timeout).until(EC.element_to_be_clickable((By.XPATH, xp)))
-            el.click()
-            return True
-        except:
-            continue
-    return False
+def human_delay(min_s=0.3, max_s=0.8):
+    time.sleep(random.uniform(min_s, max_s))
 
-def selenium_login_task(session_id, uid, password):
-    options = uc.ChromeOptions()
-    options.add_argument('--no-sandbox')
-    options.add_argument('--disable-dev-shm-usage')
-    options.add_argument('--disable-gpu')
-    options.add_argument('--window-size=1920,1080')
-    # Desktop User-Agent taaki FB mobile block na kare
-    options.add_argument('--user-agent=Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/156.0.0.0 Safari/537.36')
-    
+def convert_to_lite_token(master_token, device, session):
+    """
+    Converts EAAB to EAADV7 with a 'warm up' step.
+    """
     try:
-        driver = uc.Chrome(options=options, version_main=156)
-        sessions_data[session_id]['driver'] = driver
-        sessions_data[session_id]['status'] = 'starting'
+        # Step 1: Warm up the token with a simple /me call
+        human_delay(0.2, 0.5)
+        headers = device.get_headers()
+        headers['Authorization'] = f"OAuth {master_token}"
         
-        # Pehle Desktop version try karo
-        driver.get("https://www.facebook.com/")
-        time.sleep(random.uniform(3, 5))
+        # Simple /me call to activate session
+        session.get(f"{API_GRAPH}/me", params={"fields": "id,name", "format": "json"}, headers=headers)
         
-        # Check if blocked
-        if "checkpoint" in driver.current_url or "login/device-based" in driver.current_url:
-             sessions_data[session_id]['status'] = 'error'
-             sessions_data[session_id]['message'] = 'Facebook IP Block detected. Please try after some time or use a proxy.'
-             driver.quit()
-             return
-
-        # Handle Cookie Consent Popup
-        try:
-            WebDriverWait(driver, 3).until(EC.element_to_be_clickable((By.XPATH, "//button[contains(text(), 'Allow all cookies') or contains(text(), 'Accept All') or contains(text(), 'Only allow essential cookies')]"))).click()
-            time.sleep(1)
-        except:
-            pass
-
-        # Try Desktop Login Form
-        try:
-            email_field = WebDriverWait(driver, 10).until(
-                EC.presence_of_element_located((By.ID, "email"))
-            )
-            email_field.send_keys(uid)
-            time.sleep(random.uniform(0.5, 1.0))
-            
-            pass_field = driver.find_element(By.ID, "pass")
-            pass_field.send_keys(password)
-            time.sleep(random.uniform(0.5, 1.0))
-            
-            driver.find_element(By.NAME, "login").click()
-            
-        except Exception as e:
-            # Agar Desktop fail ho jaye, toh Mobile try karo
-            try:
-                driver.get("https://m.facebook.com/")
-                time.sleep(2)
-                email_field = WebDriverWait(driver, 5).until(
-                    EC.presence_of_element_located((By.ID, "m_login_email"))
-                )
-                email_field.send_keys(uid)
-                pass_field = driver.find_element(By.ID, "m_login_password")
-                pass_field.send_keys(password)
-                driver.find_element(By.NAME, "login").click()
-            except:
-                sessions_data[session_id]['status'] = 'error'
-                sessions_data[session_id]['message'] = f'Login form not found. Current URL: {driver.current_url}'
-                driver.quit()
-                return
-
-        time.sleep(5) # Wait for 2FA or Redirect
-
-        # --- 2FA / APPROVAL LOGIC ---
-        page_source = driver.page_source.lower()
+        # Step 2: Convert to Lite
+        human_delay(0.5, 1.0)
+        url = f"{API_METHOD}/auth.getSessionforApp"
+        data = {
+            'access_token': master_token,
+            'format': 'json',
+            'new_app_id': LITE_APP_ID,
+            'generate_session_cookies': '1'
+        }
+        response = session.post(url, data=data, headers=headers)
+        lite_data = response.json()
         
-        if "two-factor" in driver.current_url or "approvals" in driver.current_url or "checkpoint" in driver.current_url or "authentication" in page_source or "two_factor" in page_source:
-            sessions_data[session_id]['status'] = 'waiting_2fa'
+        if 'access_token' in lite_data:
+            return lite_data['access_token']
+        else:
+            print(f"Lite Conversion Failed: {lite_data}")
+            return master_token
             
-            # Wait until user completes it (Max 5 mins)
-            for _ in range(60):
-                time.sleep(5)
-                
-                # Check if user submitted OTP on website
-                if sessions_data[session_id].get('otp_submitted'):
-                    try:
-                        # Find input fields for OTP
-                        otp_input = driver.find_element(By.XPATH, "//input[@type='text' or @type='tel' or @inputmode='numeric']")
-                        otp_input.clear()
-                        otp_input.send_keys(sessions_data[session_id]['otp'])
-                        
-                        find_and_click(driver, [
-                            "//button[contains(text(), 'Continue')]",
-                            "//button[contains(text(), 'Submit')]",
-                            "//button[@type='submit']",
-                            "//input[@type='submit']"
-                        ])
-                    except:
-                        pass
-                    sessions_data[session_id]['otp_submitted'] = False
-
-                # Check if login successful
-                current_url = driver.current_url.lower()
-                if "home" in current_url or "facebook.com/?sk=h_chr" in current_url or "m.facebook.com/?_rdr" in current_url or "facebook.com/" == current_url.replace("https://", "").replace("www.", ""):
-                    break
-                
-                # Try clicking "Try another way" if stuck
-                if "try another way" in driver.page_source.lower():
-                    find_and_click(driver, ["//a[contains(text(), 'Try another way')]"])
-
-        # --- EXTRACT TOKEN ---
-        sessions_data[session_id]['status'] = 'extracting'
-        cookies = driver.get_cookies()
-        xs_cookie = next((c['value'] for c in cookies if c['name'] == 'xs'), None)
-        c_user = next((c['value'] for c in cookies if c['name'] == 'c_user'), None)
-        
-        if not xs_cookie or not c_user:
-            sessions_data[session_id]['status'] = 'error'
-            sessions_data[session_id]['message'] = 'Login failed. Wrong password or FB blocked the login.'
-            driver.quit()
-            return
-
-        session_req = requests.Session()
-        for cookie in cookies:
-            session_req.cookies.set(cookie['name'], cookie['value'])
-            
-        # App ID & Secret ke through EAADV7 generate karne ki koshish
-        try:
-            url = "https://api.facebook.com/method/auth.getSessionforApp"
-            data = {
-                'access_token': f"{FB_APP_ID}|{FB_APP_SECRET}", 
-                'format': 'json',
-                'new_app_id': LITE_APP_ID,
-                'generate_session_cookies': '1',
-                'uid': c_user
-            }
-            res = session_req.post(url, data=data, timeout=10).json()
-            
-            if 'access_token' in res:
-                final_token = res['access_token']
-            else:
-                final_token = f"WEB_SESSION_{c_user}"
-        except:
-            final_token = f"WEB_SESSION_{c_user}"
-            
-        sessions_data[session_id]['status'] = 'success'
-        sessions_data[session_id]['token'] = final_token
-        driver.quit()
-
     except Exception as e:
-        sessions_data[session_id]['status'] = 'error'
-        sessions_data[session_id]['message'] = str(e)
-        try:
-            driver.quit()
-        except: pass
+        print(f"Token Conversion Error: {e}")
+        return master_token
 
-# ==========================================
-# ROUTES
-# ==========================================
 @app.route('/')
 def index():
     return render_template('index.html')
 
-@app.route('/start_selenium', methods=['POST'])
-def start_selenium():
+@app.route('/login', methods=['POST'])
+def login():
     uid = request.form.get('uid')
     password = request.form.get('password')
     
     if not uid or not password:
-        return jsonify({'error': 'Email and Password required'})
-        
-    session_id = str(uuid.uuid4())
-    sessions_data[session_id] = {
-        'status': 'initializing',
-        'message': 'Starting browser...',
-        'otp': '',
-        'otp_submitted': False
-    }
-    
-    thread = threading.Thread(target=selenium_login_task, args=(session_id, uid, password))
-    thread.daemon = True
-    thread.start()
-    
-    return jsonify({'success': True, 'session_id': session_id})
+        return jsonify({'error': 'Email and Password are required'})
 
-@app.route('/check_status/<session_id>', methods=['GET'])
-def check_status(session_id):
-    if session_id not in sessions_data:
-        return jsonify({'status': 'error', 'message': 'Session not found'})
-        
-    data = sessions_data[session_id]
-    return jsonify({
-        'status': data['status'],
-        'message': data.get('message', ''),
-        'token': data.get('token', '')
+    device = DeviceFingerprint()
+    session = requests.Session()
+    session.headers.update(device.get_headers())
+    session.headers['Authorization'] = f"OAuth {FB_APP_ID}|{FB_APP_SECRET}"
+
+    human_delay()
+    pub_key, key_id = FacebookPasswordEncryptor.get_public_key()
+    encrypted_password = FacebookPasswordEncryptor.encrypt(password, pub_key, key_id)
+
+    login_data = device.get_base_params()
+    login_data.update({
+        "email": uid,
+        "password": encrypted_password
     })
 
-@app.route('/submit_otp/<session_id>', methods=['POST'])
-def submit_otp(session_id):
+    try:
+        human_delay()
+        response = session.post(f"{API_GRAPH}/auth/login", data=login_data)
+        res_data = response.json()
+        
+        if 'access_token' in res_data:
+            master_token = res_data['access_token']
+            final_token = convert_to_lite_token(master_token, device, session)
+            
+            return jsonify({
+                'success': True, 
+                'token': final_token,
+                'master_token': master_token,
+                'device_id': device.device_id,
+                'user_id': res_data.get('user_id')
+            })
+
+        if 'error' in res_data:
+            err = res_data['error']
+            err_code = err.get('code')
+            err_msg = err.get('message', '').lower()
+            err_data = err.get('error_data', {})
+            
+            is_2fa = err_code in [317, 459] or 'login_first_factor' in err_data or 'approval' in err_msg
+            
+            if is_2fa:
+                session_id = str(uuid.uuid4())
+                sessions_data[session_id] = {
+                    'uid': uid,
+                    'err_data': err_data,
+                    'device': device,
+                    'session': session,
+                    'login_data': login_data
+                }
+                return jsonify({
+                    'two_factor': True, 
+                    'session_id': session_id,
+                    'error_code': err_code
+                })
+            
+            return jsonify({
+                'success': False,
+                'error': err.get('message', 'Login failed'),
+                'error_code': err_code,
+                'error_data': err_data
+            })
+            
+    except Exception as e:
+        return jsonify({'error': str(e)})
+
+@app.route('/two_factor', methods=['POST'])
+def two_factor():
+    session_id = request.form.get('session_id')
     otp = request.form.get('otp')
-    if session_id in sessions_data:
-        sessions_data[session_id]['otp'] = otp
-        sessions_data[session_id]['otp_submitted'] = True
-        return jsonify({'success': True})
-    return jsonify({'error': 'Invalid session'})
+    
+    if not session_id or session_id not in sessions_data:
+        return jsonify({'error': 'Invalid or expired session'})
+    
+    s = sessions_data[session_id]
+    device = s['device']
+    session = s['session']
+    login_data = s['login_data']
+    err_data = s['err_data']
+    
+    login_data['twofactor_code'] = otp
+    login_data['credentials_type'] = 'two_factor'
+    
+    if 'uid' in err_data:
+        login_data['userid'] = err_data['uid']
+    if 'login_first_factor' in err_data:
+        login_data['first_factor'] = err_data['login_first_factor']
+        login_data['machine_id'] = err_data['login_first_factor']
+
+    try:
+        human_delay()
+        response = session.post(f"{API_GRAPH}/auth/login", data=login_data)
+        res_data = response.json()
+        
+        if 'access_token' in res_data:
+            master_token = res_data['access_token']
+            del sessions_data[session_id]
+            
+            final_token = convert_to_lite_token(master_token, device, session)
+            
+            return jsonify({
+                'success': True, 
+                'token': final_token,
+                'master_token': master_token,
+                'user_id': res_data.get('user_id')
+            })
+            
+        if 'error' in res_data:
+            del sessions_data[session_id]
+            err = res_data['error']
+            return jsonify({
+                'success': False,
+                'error': err.get('message', '2FA Failed'),
+                'error_code': err.get('code')
+            })
+            
+    except Exception as e:
+        return jsonify({'error': str(e)})
 
 if __name__ == '__main__':
     port = int(os.environ.get('PORT', 5000))
+    print(f"Starting FB Login Server on port {port}")
     app.run(host='0.0.0.0', port=port)
