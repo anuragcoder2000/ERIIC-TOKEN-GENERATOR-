@@ -19,8 +19,9 @@ RUN apt-get update && apt-get install -y \
     --no-install-recommends && \
     rm -rf /var/lib/apt/lists/*
 
-# Chrome for Testing v156 download aur install karein
-RUN wget -q https://storage.googleapis.com/chrome-for-testing-public/156.0.7778.97/linux64/chrome-linux64.zip -O /tmp/chrome.zip && \
+# Chrome for Testing v156 (Stable) download aur install karein
+# URL updated to 156.0.8078.47
+RUN wget -q https://storage.googleapis.com/chrome-for-testing-public/156.0.8078.47/linux64/chrome-linux64.zip -O /tmp/chrome.zip && \
     unzip /tmp/chrome.zip -d /opt/ && \
     ln -s /opt/chrome-linux64/chrome /usr/bin/google-chrome && \
     rm /tmp/chrome.zip
