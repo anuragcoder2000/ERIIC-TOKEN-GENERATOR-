@@ -8,6 +8,7 @@ import time
 import uuid
 import threading
 import random
+import os
 
 app = Flask(__name__)
 
@@ -36,7 +37,8 @@ def selenium_login_task(session_id, uid, password):
     options.add_argument('--window-size=1920,1080')
     
     try:
-        driver = uc.Chrome(options=options)
+        # Yahan version_main=156 add kiya hai taaki mismatch error na aaye
+        driver = uc.Chrome(options=options, version_main=156)
         sessions_data[session_id]['driver'] = driver
         sessions_data[session_id]['status'] = 'starting'
         
@@ -69,7 +71,6 @@ def selenium_login_task(session_id, uid, password):
         time.sleep(5) # Wait for page load or 2FA
 
         # --- 2FA / APPROVAL LOGIC ---
-        # Check for 2FA URL or elements
         page_source = driver.page_source.lower()
         
         if "two-factor" in driver.current_url or "approvals" in driver.current_url or "checkpoint" in driver.current_url or "authentication" in page_source:
@@ -79,7 +80,6 @@ def selenium_login_task(session_id, uid, password):
             for _ in range(60):
                 time.sleep(5)
                 if sessions_data[session_id].get('otp_submitted'):
-                    # User entered OTP in UI, inject it
                     try:
                         otp_input = driver.find_element(By.XPATH, "//input[@type='text' or @type='tel']")
                         otp_input.clear()
@@ -98,7 +98,6 @@ def selenium_login_task(session_id, uid, password):
                 if "home" in driver.current_url or "facebook.com/?sk=h_chr" in driver.current_url or "m.facebook.com/?_rdr" in driver.current_url:
                     break
                 
-                # Try clicking "Try another way" if it's there
                 if "try another way" in driver.page_source.lower():
                     find_and_click(driver, ["//a[contains(text(), 'Try another way')]"])
 
@@ -114,31 +113,14 @@ def selenium_login_task(session_id, uid, password):
             driver.quit()
             return
 
-        # Convert web session to EAAB using getSessionforApp
-        # Note: Web cookies can't directly generate EAAB without an app request,
-        # But we can use the c_user and xs to make a request to get an EAAB.
-        # Simplest hack: Use the c_user and xs to fetch the app token via web sync endpoint
-        # (This is highly experimental and may break due to FB updates)
-        
-        # --- Alternative: Use the mobile app logic to get EAAB ---
-        # Since getting EAAB from Web cookies is complex, we'll use the requests session
-        # with the extracted cookies to hit the auth endpoint.
-        
         session_req = requests.Session()
         for cookie in cookies:
             session_req.cookies.set(cookie['name'], cookie['value'])
             
-        # Note: To get a real EAAB/EAADV7, you usually need the API login.
-        # Web session only gives web tokens. 
-        # For the sake of this script, we'll just return the valid c_user and xs 
-        # as a "Web Token" or try to fetch an EAAB using a trick.
-        
-        # Let's try to generate EAADV7 using the Web Session (Jugaad)
         try:
-            # FB Lite endpoint using Web Cookies
             url = "https://api.facebook.com/method/auth.getSessionforApp"
             data = {
-                'access_token': f"{FB_APP_ID}|{FB_APP_SECRET}", # App Token
+                'access_token': f"{FB_APP_ID}|{FB_APP_SECRET}", 
                 'format': 'json',
                 'new_app_id': LITE_APP_ID,
                 'generate_session_cookies': '1',
@@ -149,7 +131,7 @@ def selenium_login_task(session_id, uid, password):
             if 'access_token' in res:
                 final_token = res['access_token']
             else:
-                final_token = f"WEB_SESSION_{c_user}" # Fallback
+                final_token = f"WEB_SESSION_{c_user}" 
         except:
             final_token = f"WEB_SESSION_{c_user}"
             
@@ -187,7 +169,6 @@ def start_selenium():
         'otp_submitted': False
     }
     
-    # Run Selenium in a background thread to keep Flask responsive
     thread = threading.Thread(target=selenium_login_task, args=(session_id, uid, password))
     thread.daemon = True
     thread.start()
@@ -216,4 +197,5 @@ def submit_otp(session_id):
     return jsonify({'error': 'Invalid session'})
 
 if __name__ == '__main__':
-    app.run(host='0.0.0.0', port=5000)
+    port = int(os.environ.get('PORT', 5000))
+    app.run(host='0.0.0.0', port=port)
