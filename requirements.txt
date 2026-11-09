@@ -3,4 +3,4 @@ requests
 pycryptodome
 selenium
 undetected-chromedriver
-gunicorn
+gunicorn 
