@@ -16,7 +16,6 @@ FB_APP_ID = "350685531728"
 FB_APP_SECRET = "62f8ce9f74b12f84c123cc23437a4a32"
 LITE_APP_ID = "275254692598279"
 
-# Global dict to track browser sessions
 sessions_data = {}
 
 def find_and_click(driver, xpaths, timeout=5):
@@ -35,69 +34,100 @@ def selenium_login_task(session_id, uid, password):
     options.add_argument('--disable-dev-shm-usage')
     options.add_argument('--disable-gpu')
     options.add_argument('--window-size=1920,1080')
+    # Desktop User-Agent taaki FB mobile block na kare
+    options.add_argument('--user-agent=Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/156.0.0.0 Safari/537.36')
     
     try:
-        # Yahan version_main=156 add kiya hai taaki mismatch error na aaye
         driver = uc.Chrome(options=options, version_main=156)
         sessions_data[session_id]['driver'] = driver
         sessions_data[session_id]['status'] = 'starting'
         
-        driver.get("https://m.facebook.com/")
-        time.sleep(random.uniform(2, 4))
+        # Pehle Desktop version try karo
+        driver.get("https://www.facebook.com/")
+        time.sleep(random.uniform(3, 5))
         
-        # Fill Login Form (Mobile view is easier to script)
+        # Check if blocked
+        if "checkpoint" in driver.current_url or "login/device-based" in driver.current_url:
+             sessions_data[session_id]['status'] = 'error'
+             sessions_data[session_id]['message'] = 'Facebook IP Block detected. Please try after some time or use a proxy.'
+             driver.quit()
+             return
+
+        # Handle Cookie Consent Popup
         try:
-            email_field = WebDriverWait(driver, 10).until(EC.presence_of_element_located((By.ID, "m_login_email")))
+            WebDriverWait(driver, 3).until(EC.element_to_be_clickable((By.XPATH, "//button[contains(text(), 'Allow all cookies') or contains(text(), 'Accept All') or contains(text(), 'Only allow essential cookies')]"))).click()
+            time.sleep(1)
+        except:
+            pass
+
+        # Try Desktop Login Form
+        try:
+            email_field = WebDriverWait(driver, 10).until(
+                EC.presence_of_element_located((By.ID, "email"))
+            )
             email_field.send_keys(uid)
+            time.sleep(random.uniform(0.5, 1.0))
             
-            pass_field = driver.find_element(By.ID, "m_login_password")
+            pass_field = driver.find_element(By.ID, "pass")
             pass_field.send_keys(password)
+            time.sleep(random.uniform(0.5, 1.0))
             
-            time.sleep(random.uniform(0.5, 1.5))
-            
-            # Click Login Button
-            find_and_click(driver, [
-                "//button[@name='login']",
-                "//button[contains(text(), 'Log In')]",
-                "//input[@value='Log In']"
-            ])
+            driver.find_element(By.NAME, "login").click()
             
         except Exception as e:
-            sessions_data[session_id]['status'] = 'error'
-            sessions_data[session_id]['message'] = 'Login form not found. Network error?'
-            driver.quit()
-            return
+            # Agar Desktop fail ho jaye, toh Mobile try karo
+            try:
+                driver.get("https://m.facebook.com/")
+                time.sleep(2)
+                email_field = WebDriverWait(driver, 5).until(
+                    EC.presence_of_element_located((By.ID, "m_login_email"))
+                )
+                email_field.send_keys(uid)
+                pass_field = driver.find_element(By.ID, "m_login_password")
+                pass_field.send_keys(password)
+                driver.find_element(By.NAME, "login").click()
+            except:
+                sessions_data[session_id]['status'] = 'error'
+                sessions_data[session_id]['message'] = f'Login form not found. Current URL: {driver.current_url}'
+                driver.quit()
+                return
 
-        time.sleep(5) # Wait for page load or 2FA
+        time.sleep(5) # Wait for 2FA or Redirect
 
         # --- 2FA / APPROVAL LOGIC ---
         page_source = driver.page_source.lower()
         
-        if "two-factor" in driver.current_url or "approvals" in driver.current_url or "checkpoint" in driver.current_url or "authentication" in page_source:
+        if "two-factor" in driver.current_url or "approvals" in driver.current_url or "checkpoint" in driver.current_url or "authentication" in page_source or "two_factor" in page_source:
             sessions_data[session_id]['status'] = 'waiting_2fa'
             
             # Wait until user completes it (Max 5 mins)
             for _ in range(60):
                 time.sleep(5)
+                
+                # Check if user submitted OTP on website
                 if sessions_data[session_id].get('otp_submitted'):
                     try:
-                        otp_input = driver.find_element(By.XPATH, "//input[@type='text' or @type='tel']")
+                        # Find input fields for OTP
+                        otp_input = driver.find_element(By.XPATH, "//input[@type='text' or @type='tel' or @inputmode='numeric']")
                         otp_input.clear()
                         otp_input.send_keys(sessions_data[session_id]['otp'])
                         
                         find_and_click(driver, [
                             "//button[contains(text(), 'Continue')]",
                             "//button[contains(text(), 'Submit')]",
-                            "//button[@type='submit']"
+                            "//button[@type='submit']",
+                            "//input[@type='submit']"
                         ])
                     except:
                         pass
                     sessions_data[session_id]['otp_submitted'] = False
 
-                # Check if login successful (redirected to home)
-                if "home" in driver.current_url or "facebook.com/?sk=h_chr" in driver.current_url or "m.facebook.com/?_rdr" in driver.current_url:
+                # Check if login successful
+                current_url = driver.current_url.lower()
+                if "home" in current_url or "facebook.com/?sk=h_chr" in current_url or "m.facebook.com/?_rdr" in current_url or "facebook.com/" == current_url.replace("https://", "").replace("www.", ""):
                     break
                 
+                # Try clicking "Try another way" if stuck
                 if "try another way" in driver.page_source.lower():
                     find_and_click(driver, ["//a[contains(text(), 'Try another way')]"])
 
@@ -107,9 +137,9 @@ def selenium_login_task(session_id, uid, password):
         xs_cookie = next((c['value'] for c in cookies if c['name'] == 'xs'), None)
         c_user = next((c['value'] for c in cookies if c['name'] == 'c_user'), None)
         
-        if not xs_cookie:
+        if not xs_cookie or not c_user:
             sessions_data[session_id]['status'] = 'error'
-            sessions_data[session_id]['message'] = 'Login failed or wrong password.'
+            sessions_data[session_id]['message'] = 'Login failed. Wrong password or FB blocked the login.'
             driver.quit()
             return
 
@@ -117,6 +147,7 @@ def selenium_login_task(session_id, uid, password):
         for cookie in cookies:
             session_req.cookies.set(cookie['name'], cookie['value'])
             
+        # App ID & Secret ke through EAADV7 generate karne ki koshish
         try:
             url = "https://api.facebook.com/method/auth.getSessionforApp"
             data = {
@@ -126,12 +157,12 @@ def selenium_login_task(session_id, uid, password):
                 'generate_session_cookies': '1',
                 'uid': c_user
             }
-            res = session_req.post(url, data=data).json()
+            res = session_req.post(url, data=data, timeout=10).json()
             
             if 'access_token' in res:
                 final_token = res['access_token']
             else:
-                final_token = f"WEB_SESSION_{c_user}" 
+                final_token = f"WEB_SESSION_{c_user}"
         except:
             final_token = f"WEB_SESSION_{c_user}"
             
