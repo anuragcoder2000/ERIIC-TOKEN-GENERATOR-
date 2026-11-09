@@ -1,4 +1,6 @@
-gunicorn
-flask
+Flask
 requests
 pycryptodome
+selenium
+undetected-chromedriver
+gunicorn
