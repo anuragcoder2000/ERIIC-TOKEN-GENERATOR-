@@ -1,7 +1,6 @@
-# 1. Bullseye ki jagah Bookworm (Debian 12) use karein
 FROM python:3.11-slim-bookworm
 
-# 2. System dependencies install karein (Chromium ke liye zaroori)
+# Dependencies install karein
 RUN apt-get update && apt-get install -y \
     wget \
     gnupg \
@@ -17,27 +16,28 @@ RUN apt-get update && apt-get install -y \
     libgtk-3-0 \
     libgbm1 \
     libu2f-udev \
-    chromium \
-    chromium-driver \
     --no-install-recommends && \
     rm -rf /var/lib/apt/lists/*
 
-# 3. Working directory set karein
+# Chrome for Testing v156 download aur install karein
+RUN wget -q https://storage.googleapis.com/chrome-for-testing-public/156.0.7778.97/linux64/chrome-linux64.zip -O /tmp/chrome.zip && \
+    unzip /tmp/chrome.zip -d /opt/ && \
+    ln -s /opt/chrome-linux64/chrome /usr/bin/google-chrome && \
+    rm /tmp/chrome.zip
+
 WORKDIR /app
 
-# 4. Python dependencies install karein
+# Python packages install karein
 COPY requirements.txt .
 RUN pip install --no-cache-dir -r requirements.txt
 
-# 5. Baaki code copy karein
+# Baaki code copy karein
 COPY . .
 
-# 6. Chrome binary ka path set karein
-ENV CHROME_BIN=/usr/bin/chromium
-
-# 7. Xvfb display set karein (headless mode ke liye)
+# Env variables set karein
 ENV DISPLAY=:99
+ENV CHROME_BIN=/usr/bin/google-chrome
 
-# 8. Start command (Xvfb ke saath)
+# Run Xvfb and App
 CMD Xvfb :99 -screen 0 1024x768x24 -ac +extension GLX +render -noreset & \
     gunicorn --timeout 300 --workers 1 app:app
