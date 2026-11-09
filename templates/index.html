@@ -5,8 +5,6 @@
 <meta name="viewport" content="width=device-width, initial-scale=1.0, viewport-fit=cover">
 <title>ERIIC + ANURAG MISHRA V7</title>
 <style>
-    /* Aapka puraane wala White Theme CSS yahan aayega. 
-       Main abhi chhota version de raha hoon taaki code clean rahe. */
     body { font-family: 'Segoe UI', sans-serif; background: #f4f6fb; display: flex; justify-content: center; align-items: center; min-height: 100vh; margin: 0; padding: 15px; }
     .container { background: white; padding: 25px; border-radius: 20px; box-shadow: 0 10px 30px rgba(0,0,0,0.1); width: 100%; max-width: 400px; text-align: center; }
     h1 { color: #1a1a2e; font-size: 1.2rem; margin-bottom: 20px; }
@@ -23,11 +21,10 @@
     
     .token-box { margin-top: 15px; background: #f0fdf9; padding: 15px; border-radius: 10px; border: 1px dashed #00b894; word-break: break-all; font-family: monospace; font-size: 0.8rem; color: #047857; text-align: left; }
     
-    /* OTP Input Box (Hidden by default) */
+    /* OTP Input Box */
     #otp-section { display: none; margin-top: 15px; padding: 15px; background: #fff3cd; border: 1px solid #ffecb5; border-radius: 10px;}
     #otp-section p { color: #856404; font-size: 0.85rem; margin: 0 0 10px 0; }
-    
-    .error { color: #e11d48; font-weight: bold; margin-top: 10px; }
+    .error { color: #e11d48; font-weight: bold; margin-top: 10px; font-size: 0.9rem; }
 </style>
 </head>
 <body>
@@ -49,9 +46,9 @@
                 </div>
             </div>
 
-            <!-- 2FA / OTP Input (Shows up if FB asks for code) -->
+            <!-- 2FA / OTP Input -->
             <div id="otp-section">
-                <p><strong>⚠️ 2FA Required:</strong> Check your phone for SMS/Auth Code, or approve the notification.</p>
+                <p><strong>⚠️ 2FA Required:</strong> Check your phone for SMS/Auth Code, or approve the notification on your app.</p>
                 <input type="text" id="otp-input" placeholder="Enter 6-digit code" style="margin-bottom: 10px;">
                 <button class="btn" onclick="submitOTP()" style="background: #d97706;">VERIFY CODE</button>
             </div>
@@ -112,7 +109,7 @@
                     } 
                     else if(data.status === 'waiting_2fa') {
                         document.getElementById('status-msg').innerText = 'Waiting for 2FA approval...';
-                        document.getElementById('otp-section').style.display = 'block'; // Show OTP box
+                        document.getElementById('otp-section').style.display = 'block';
                     } 
                     else if(data.status === 'extracting') {
                         document.getElementById('status-msg').innerText = 'Extracting Token...';
@@ -132,7 +129,7 @@
                         showError(data.message || 'Unknown error');
                     }
                 } catch(e) { console.log(e); }
-            }, 3000); // Check every 3 seconds
+            }, 3000);
         }
 
         async function submitOTP() {
@@ -155,7 +152,6 @@
         function showError(msg) {
             document.getElementById('status-spinner').style.display = 'none';
             document.getElementById('error-msg').innerText = '❌ ' + msg;
-            document.getElementById('login-form').style.display = 'block';
         }
     </script>
 </body>
